@@ -1,0 +1,23 @@
+# Core training stack
+numpy>=1.23
+opencv-python>=4.8
+loguru>=0.7
+PyYAML>=6.0
+tqdm>=4.66
+matplotlib>=3.7
+cython>=3.0
+pycocotools>=2.0.7
+thop>=0.1.1.post2209072238
+
+# YOLOX runtime
+torch>=2.1
+torchvision>=0.16
+onnx>=1.14
+onnxruntime>=1.16
+nvidia-cublas-cu12; platform_system == "Linux"
+nvidia-cudnn-cu12; platform_system == "Linux"
+
+# Optional tools
+mlflow>=2.9
+pillow>=10.0
+scikit-image>=0.21

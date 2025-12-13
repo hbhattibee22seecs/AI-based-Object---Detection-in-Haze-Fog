@@ -1,0 +1,41 @@
+# Project level ignores
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python environments
+.venv/
+venv/
+.env/
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.code-workspace
+
+# Large artifacts and checkpoints
+*.pth
+*.pt
+*.onnx
+*.engine
+*.trt
+*.log
+*.ckpt
+*.npz
+
+# Local datasets & exports
+data/RTTS/
+data/**/*.zip
+data/**/*.tar
+data/**/*.tar.gz
+results/
+outputs/
+
+# Misc
+*.swp
+*.swo
+Thumbs.db
+.DS_Store

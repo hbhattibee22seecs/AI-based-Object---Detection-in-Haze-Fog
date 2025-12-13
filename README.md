@@ -48,6 +48,35 @@ All reviewed models maintain **< 70 GFLOPs** and **< 20 M parameters**, confirmi
 
 ---
 
+## 📥 RTTS Dataset & Pipeline Quickstart
+1. Create a `data` folder and download the RESIDE RTTS split:  
+  ```powershell
+  Invoke-WebRequest -Uri https://residedata.obs.cn-north-4.myhuaweicloud.com/RTTS.zip -OutFile data/RTTS.zip
+  Expand-Archive -Path data/RTTS.zip -DestinationPath data -Force
+  Remove-Item data/RTTS.zip
+  ```
+  (Linux users can `wget` the same URL.)
+2. Install deps and set the dataset path:
+  ```powershell
+  pip install -r requirements.txt
+  $env:YOLOX_DATADIR = "${PWD}/data"
+  ```
+3. Copy `src\exps\example\custom\yolox_s.py` to `rtts_yolox_s.py`, set `num_classes = 5`, and point `data_dir` to `data/RTTS`.
+4. Train with `python src/tools/train.py -f src/exps/example/custom/rtts_yolox_s.py -d 1 -b 16 --fp16 -o -c yolox_s.pth`.
+
+Detailed guidance lives in `docs/rtts_training.md`.
+
+---
+
+## 🚀 Jetson Nano Inference
+- Export your best checkpoint to ONNX: `python src/tools/export_onnx.py ...`.
+- Build a TensorRT engine on Jetson with `python src/tools/trt.py --trt_fp16 ...`.
+- Run the FP16 engine via `python src/demo/TensorRT/python/demo.py --trt-file exports/rtts_yolox_s_fp16.trt --cam-id 0`.
+
+See `docs/jetson_nano_inference.md` for power-mode tweaks, dependency notes, and sample commands.
+
+---
+
 ## 🔍 Key Highlights
 - ✅ Comprehensive **IEEE-formatted literature review** (2019–2025)  
 - 🌫️ Focus on **joint dehazing and detection** under fog and haze  
