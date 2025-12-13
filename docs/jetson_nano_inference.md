@@ -30,11 +30,12 @@ This document walks through exporting a trained RTTS-aware YOLOX checkpoint and 
    > On Jetson you must install the matching `torch`/`torchvision` wheels from NVIDIA's index (the default pip wheels target x86_64).
 
 ## 3. Copy Artifacts
-Transfer the ONNX/engine, experiment file, and class names:
+Use the `rtts_yolox_s_artifacts.zip` bundle produced by the Colab notebook (saved under `results/rtts_yolox_s_artifacts.zip`), or copy files individually:
 ```bash
-scp -r exports/RTTS_yolox_s.onnx jetson@nano.local:~/haze-yolox/
-scp src/exps/example/custom/rtts_yolox_s.py jetson@nano.local:~/haze-yolox/exps/
+scp rtts_yolox_s_artifacts.zip jetson@nano.local:~/haze-yolox/
+ssh jetson@nano.local "cd haze-yolox && unzip -o rtts_yolox_s_artifacts.zip"
 ```
+The archive includes `rtts_yolox_s.onnx`, the TensorRT weights, the experiment file, the consolidated `results/` directory (plots, checkpoints, inference samples), and the helper script `src/Jetson_src/jetson_nano_runner.py`. If you prefer manual copying, ensure `exports/`, `YOLOX_outputs/rtts_yolox_s/`, `results/`, and `src/Jetson_src/jetson_nano_runner.py` all land on the Jetson.
 
 ## 4. Build a TensorRT Engine (on Jetson)
 ```bash
@@ -51,22 +52,29 @@ Alternatively, use `trtexec`:
   --saveEngine=exports/rtts_yolox_s_fp16.trt \
   --fp16 --workspace=2048
 ```
+> **Why TensorRT?** The Jetson Nano struggles to exceed ~2 FPS with the pure PyTorch model. The helper script (`jetson_nano_runner.py`) requires a TensorRT engine (`model_trt.pth`) and will automatically rebuild it via `tools/trt.py` when `--rebuild` (or the initial run) is invoked. Skip this step only if you already copied a matching engine from another machine.
 
 ## 5. Run Inference
-### Image or Video file
+### Recommended: `jetson_nano_runner.py`
 ```bash
-python3 src/demo/TensorRT/python/demo.py \
-  --trt-file exports/rtts_yolox_s_fp16.trt \
-  --input demo/hazy_clip.mp4 \
-  --conf 0.25 --nms 0.5 --save_result
+python3 src/Jetson_src/jetson_nano_runner.py \
+  --mode image \
+  --input data/RTTS/JPEGImages/AM_Bing_211.png \
+  --conf 0.25 --nms 0.45 --tsize 640
 ```
-### Live USB/CSI camera
+- Switch to `--mode video --input fog_drive.mp4` for offline footage.
+- Use `--mode webcam --cam-id 0` to connect a CSI/USB camera.
+- Pass `--rebuild` when you want to regenerate `YOLOX_outputs/<exp_name>/model_trt.pth`; the script refuses to run without a valid TensorRT engine to guarantee real-time throughput.
+
+### Direct `demo.py` usage (advanced)
 ```bash
-python3 src/demo/TensorRT/python/demo.py \
-  --trt-file exports/rtts_yolox_s_fp16.trt \
-  --cam-id 0 --conf 0.3 --nms 0.45 --fp16
+python3 src/tools/demo.py image \
+  -f src/exps/example/custom/rtts_yolox_s.py \
+  --trt --trt-file YOLOX_outputs/rtts_yolox_s/model_trt.pth \
+  --path data/RTTS/JPEGImages/AM_Bing_211.png \
+  --conf 0.25 --nms 0.45 --save_result
 ```
-Use `--img-size 640 640` to match your training resolution. Results save to `YOLOX_outputs/trt_demo/`.
+Add `video` or `webcam` in place of `image` plus the relevant `--path/--camid`. Results save to `YOLOX_outputs/trt_demo/`.
 
 ## 6. Performance Tips
 - Keep input resolution at 640² for ~10 FPS; drop to 512² for smoother feeds.
