@@ -9,6 +9,7 @@ from typing import Iterable, List, Optional
 
 import cv2
 import numpy as np
+from loguru import logger
 
 from yolox.evaluators.voc_eval import voc_eval
 
@@ -124,8 +125,23 @@ class RTTSDataset(CacheDataset):
 
     def load_image(self, index: int):
         img_path = self._resolve_image_path(self.ids[index])
-        img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-        assert img is not None, f"file named {img_path} not found"
+        img = None
+        try:
+            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        except cv2.error as e:
+            logger.warning(f"OpenCV failed to read image: {img_path} ({e})")
+
+        if img is None:
+            # Fallback for cases where OpenCV fails (corrupt/odd images, transient allocator errors).
+            try:
+                from PIL import Image  # type: ignore
+
+                with Image.open(img_path) as im:
+                    im = im.convert("RGB")
+                    img = np.asarray(im)[:, :, ::-1].copy()  # RGB -> BGR
+            except Exception as e:
+                raise RuntimeError(f"Failed to read image: {img_path} ({e})")
+
         return img
 
     def load_resized_img(self, index: int):
@@ -143,9 +159,21 @@ class RTTSDataset(CacheDataset):
         return self.load_resized_img(index)
 
     def pull_item(self, index: int):
-        target, img_info, _ = self.annotations[index]
-        img = self.read_img(index)
-        return img, target, img_info, index
+        # Be robust to single bad/corrupt images: retry with a different index.
+        last_error: Exception | None = None
+        for _ in range(10):
+            try:
+                target, img_info, _ = self.annotations[index]
+                img = self.read_img(index)
+                return img, target, img_info, index
+            except Exception as e:
+                last_error = e
+                # Pick a different sample; ensures labels match the substituted image.
+                index = int(np.random.randint(0, self.num_imgs))
+
+        raise RuntimeError(
+            f"RTTS pull_item failed after retries; last error: {last_error}"
+        )
 
     @CacheDataset.mosaic_getitem
     def __getitem__(self, index: int):

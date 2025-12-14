@@ -28,36 +28,99 @@ def _normalize_ckpt_state_dict(ckpt: dict) -> dict:
     if keys and all(isinstance(k, str) and k.startswith("model.") for k in keys):
         ckpt = {k[len("model.") :]: v for k, v in ckpt.items()}
 
-    # Add derived keys for backbone nesting mismatch.
-    # If a checkpoint has `backbone.dark2...`, the current model may expect
-    # `backbone.backbone.dark2...`.
-    derived = {}
+    # Add derived keys for common naming/layout mismatches across YOLOX forks.
+    #
+    # Examples we support:
+    # - `backbone.stage1.*` (older naming) -> `backbone.backbone.dark2.*`
+    # - CSPLayer attrs: `main_conv/short_conv/final_conv/blocks` -> `conv1/conv2/conv3/m`
+    # - Separate modules: `neck.*` -> `backbone.*` (YOLOPAFPN)
+    # - MMDet style: `bbox_head.multi_level_*` -> `head.*`
+    derived: dict[str, torch.Tensor] = {}
     stage_to_dark = {
         "stage1": "dark2",
         "stage2": "dark3",
         "stage3": "dark4",
         "stage4": "dark5",
     }
+    csp_attr_map = {
+        ".main_conv.": ".conv1.",
+        ".short_conv.": ".conv2.",
+        ".final_conv.": ".conv3.",
+        ".blocks.": ".m.",
+    }
+
+    def _add_candidate(key: str, value) -> None:
+        if key not in ckpt and key not in derived:
+            derived[key] = value
+
+    def _apply_csp_attr_map(key: str) -> str:
+        for a, b in csp_attr_map.items():
+            key = key.replace(a, b)
+        return key
+
+    def _yield_candidates(key: str, value):
+        # Start with raw key and a few structural variants.
+        cands = {key}
+
+        # Some checkpoints omit the extra nesting: `backbone.*` -> `backbone.backbone.*`.
+        if key.startswith("backbone.") and not key.startswith("backbone.backbone."):
+            cands.add("backbone.backbone." + key[len("backbone.") :])
+
+        # Some checkpoints store YOLOPAFPN parameters under `neck.*`.
+        # Map those into our `backbone.*` module.
+        if key.startswith("neck."):
+            cands.add("backbone." + key[len("neck.") :])
+
+        # Map common YOLOPAFPN list-based names to our attribute names.
+        # (We still rely on shape checks later, but these are exact matches for YOLOX-S.)
+        more = set()
+        for k2 in cands:
+            more.add(k2.replace("backbone.reduce_layers.0.", "backbone.lateral_conv0."))
+            more.add(k2.replace("backbone.reduce_layers.1.", "backbone.reduce_conv1."))
+            more.add(k2.replace("backbone.top_down_blocks.0.", "backbone.C3_p4."))
+            more.add(k2.replace("backbone.top_down_blocks.1.", "backbone.C3_p3."))
+            more.add(k2.replace("backbone.bottom_up_blocks.0.", "backbone.C3_n3."))
+            more.add(k2.replace("backbone.bottom_up_blocks.1.", "backbone.C3_n4."))
+            more.add(k2.replace("backbone.downsamples.0.", "backbone.bu_conv2."))
+            more.add(k2.replace("backbone.downsamples.1.", "backbone.bu_conv1."))
+        cands |= more
+
+        # Stage naming -> dark* naming for CSPDarknet.
+        stage_more = set()
+        for k2 in cands:
+            for stage, dark in stage_to_dark.items():
+                stage_more.add(k2.replace(f"backbone.{stage}.", f"backbone.{dark}."))
+                stage_more.add(
+                    k2.replace(
+                        f"backbone.backbone.{stage}.", f"backbone.backbone.{dark}."
+                    )
+                )
+        cands |= stage_more
+
+        # CSPLayer attribute naming differences.
+        cands = {_apply_csp_attr_map(k2) for k2 in cands}
+
+        # MMDet YOLOX head naming -> our YOLOX head naming.
+        head_more = set()
+        for k2 in cands:
+            head_more.add(k2.replace("bbox_head.multi_level_cls_convs.", "head.cls_convs."))
+            head_more.add(k2.replace("bbox_head.multi_level_reg_convs.", "head.reg_convs."))
+            head_more.add(k2.replace("bbox_head.multi_level_conv_obj.", "head.obj_preds."))
+            head_more.add(k2.replace("bbox_head.multi_level_conv_reg.", "head.reg_preds."))
+            head_more.add(k2.replace("bbox_head.multi_level_conv_cls.", "head.cls_preds."))
+        cands |= head_more
+
+        # Apply CSPLayer mapping again after renames (cheap + safe).
+        cands = {_apply_csp_attr_map(k2) for k2 in cands}
+
+        return cands
+
     for k, v in ckpt.items():
         if not isinstance(k, str):
             continue
-        if k.startswith("backbone.") and not k.startswith("backbone.backbone."):
-            kk = "backbone.backbone." + k[len("backbone.") :]
-            if kk not in ckpt:
-                derived[kk] = v
+        for cand in _yield_candidates(k, v):
+            _add_candidate(cand, v)
 
-        # Some checkpoints use stage naming instead of dark* naming.
-        # Try a best-effort remap (shape mismatches are filtered later).
-        for stage, dark in stage_to_dark.items():
-            prefix = f"backbone.{stage}."
-            if k.startswith(prefix):
-                rest = k[len(prefix) :]
-                cand1 = f"backbone.{dark}." + rest
-                cand2 = f"backbone.backbone.{dark}." + rest
-                if cand1 not in ckpt and cand1 not in derived:
-                    derived[cand1] = v
-                if cand2 not in ckpt and cand2 not in derived:
-                    derived[cand2] = v
     if derived:
         ckpt = {**ckpt, **derived}
 
