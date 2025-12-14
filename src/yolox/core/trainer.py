@@ -43,17 +43,23 @@ class Trainer:
 
         # training related attr
         self.max_epoch = exp.max_epoch
-        self.amp_training = args.fp16
-        self.scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
+
+        requested_devices = getattr(args, "devices", None)
+        self.use_cuda = torch.cuda.is_available() and requested_devices != 0
+
+        # AMP only makes sense on CUDA.
+        self.amp_training = bool(getattr(args, "fp16", False) and self.use_cuda)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_training)
         self.is_distributed = get_world_size() > 1
         self.rank = get_rank()
         self.local_rank = get_local_rank()
-        self.device = "cuda:{}".format(self.local_rank)
+
+        self.device = "cuda:{}".format(self.local_rank) if self.use_cuda else "cpu"
         self.use_model_ema = exp.ema
         self.save_history_ckpt = exp.save_history_ckpt
 
         # data/dataloader related attr
-        self.data_type = torch.float16 if args.fp16 else torch.float32
+        self.data_type = torch.float16 if self.amp_training else torch.float32
         self.input_size = exp.input_size
         self.best_ap = 0
 
@@ -133,7 +139,8 @@ class Trainer:
         logger.info("exp value:\n{}".format(self.exp))
 
         # model related init
-        torch.cuda.set_device(self.local_rank)
+        if self.use_cuda:
+            torch.cuda.set_device(self.local_rank)
         model = self.exp.get_model()
         logger.info(
             "Model Summary: {}".format(get_model_info(model, self.exp.test_size))
@@ -155,14 +162,26 @@ class Trainer:
             cache_img=self.args.cache,
         )
         logger.info("init prefetcher, this might take one minute or less...")
-        self.prefetcher = DataPrefetcher(self.train_loader)
+        self.prefetcher = DataPrefetcher(self.train_loader, device=self.device)
         # max_iter means iters per epoch
         self.max_iter = len(self.train_loader)
+
+        # Optional: allow quick smoke-tests by capping the number of iters per epoch.
+        # This keeps the training loop + checkpoint + inference pipeline verifiable
+        # without needing to finish a full epoch on large datasets (esp. on CPU).
+        train_iters_per_epoch = getattr(self.exp, "train_iters_per_epoch", None)
+        if isinstance(train_iters_per_epoch, int) and train_iters_per_epoch > 0:
+            if train_iters_per_epoch < self.max_iter:
+                logger.warning(
+                    f"train_iters_per_epoch={train_iters_per_epoch} < len(dataloader)={self.max_iter}; "
+                    f"capping iters per epoch for this run."
+                )
+                self.max_iter = train_iters_per_epoch
 
         self.lr_scheduler = self.exp.get_lr_scheduler(
             self.exp.basic_lr_per_img * self.args.batch_size, self.max_iter
         )
-        if self.args.occupy:
+        if self.args.occupy and self.use_cuda:
             occupy_mem(self.local_rank)
 
         if self.is_distributed:
@@ -180,7 +199,12 @@ class Trainer:
         # Tensorboard and Wandb loggers
         if self.rank == 0:
             if self.args.logger == "tensorboard":
-                self.tblogger = SummaryWriter(os.path.join(self.file_name, "tensorboard"))
+                # Use a small flush interval so progress graphs update promptly
+                # even for long-running CPU epochs.
+                self.tblogger = SummaryWriter(
+                    os.path.join(self.file_name, "tensorboard"),
+                    flush_secs=5,
+                )
             elif self.args.logger == "wandb":
                 self.wandb_logger = WandbLogger.initialize_wandb_logger(
                     self.args,
@@ -194,7 +218,10 @@ class Trainer:
                 raise ValueError("logger must be either 'tensorboard', 'mlflow' or 'wandb'")
 
         logger.info("Training start...")
-        logger.info("\n{}".format(model))
+        # Avoid dumping the entire model graph to logs by default (very large on Windows
+        # terminals and can destabilize output capture). Opt-in with YOLOX_LOG_MODEL=1.
+        if os.environ.get("YOLOX_LOG_MODEL", "0") == "1":
+            logger.info("\n{}".format(model))
 
     def after_train(self):
         logger.info(
@@ -217,7 +244,15 @@ class Trainer:
     def before_epoch(self):
         logger.info("---> start train epoch{}".format(self.epoch + 1))
 
-        if self.epoch + 1 == self.max_epoch - self.exp.no_aug_epochs or self.no_aug:
+        # Only enter the no-aug phase if it is explicitly configured.
+        # When `no_aug_epochs == 0`, we should never disable mosaic/L1 just because
+        # `epoch + 1 == max_epoch`.
+        enter_no_aug = self.no_aug or (
+            self.exp.no_aug_epochs > 0
+            and (self.epoch + 1) == (self.max_epoch - self.exp.no_aug_epochs)
+        )
+
+        if enter_no_aug:
             logger.info("--->No mosaic aug now!")
             self.train_loader.close_mosaic()
             logger.info("--->Add additional L1 loss now!")
@@ -285,6 +320,8 @@ class Trainer:
                     for k, v in loss_meter.items():
                         self.tblogger.add_scalar(
                             f"train/{k}", v.latest, self.progress_in_iter)
+                    # Ensure scalars show up quickly in TensorBoard.
+                    self.tblogger.flush()
                 if self.args.logger == "wandb":
                     metrics = {"train/" + k: v.latest for k, v in loss_meter.items()}
                     metrics.update({
@@ -337,8 +374,30 @@ class Trainer:
             if self.args.ckpt is not None:
                 logger.info("loading checkpoint for fine tuning")
                 ckpt_file = self.args.ckpt
-                ckpt = torch.load(ckpt_file, map_location=self.device)["model"]
-                model = load_ckpt(model, ckpt)
+
+                # Support multiple checkpoint formats:
+                # - YOLOX training checkpoints: {"model": state_dict, ...}
+                # - torch.save(model.state_dict()): state_dict (OrderedDict)
+                # - some exports: {"state_dict": state_dict} / {"model_state_dict": state_dict}
+                try:
+                    ckpt_obj = torch.load(ckpt_file, map_location="cpu", weights_only=True)
+                except TypeError:
+                    ckpt_obj = torch.load(ckpt_file, map_location="cpu")
+
+                if isinstance(ckpt_obj, dict):
+                    if "model" in ckpt_obj:
+                        ckpt_state = ckpt_obj["model"]
+                    elif "state_dict" in ckpt_obj:
+                        ckpt_state = ckpt_obj["state_dict"]
+                    elif "model_state_dict" in ckpt_obj:
+                        ckpt_state = ckpt_obj["model_state_dict"]
+                    else:
+                        # Heuristic: this dict itself may be a state_dict.
+                        ckpt_state = ckpt_obj
+                else:
+                    ckpt_state = ckpt_obj
+
+                model = load_ckpt(model, ckpt_state)
             self.start_epoch = 0
 
         return model

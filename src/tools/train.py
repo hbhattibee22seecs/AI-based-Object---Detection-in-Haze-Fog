@@ -128,8 +128,17 @@ if __name__ == "__main__":
     if not args.experiment_name:
         args.experiment_name = exp.exp_name
 
-    num_gpu = get_num_devices() if args.devices is None else args.devices
-    assert num_gpu <= get_num_devices()
+    available_devices = get_num_devices()
+    num_gpu = available_devices if args.devices is None else args.devices
+
+    # CPU-only environments may report 0 CUDA devices; still allow single-process training.
+    if available_devices == 0:
+        if args.devices is None:
+            num_gpu = 1
+        else:
+            assert num_gpu == 1, "CPU-only: use -d 1"
+    else:
+        assert num_gpu <= available_devices
 
     if args.cache is not None:
         exp.dataset = exp.get_dataset(cache=True, cache_type=args.cache)

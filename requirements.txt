@@ -10,12 +10,14 @@ pycocotools>=2.0.7
 thop>=0.1.1.post2209072238
 
 # YOLOX runtime
-torch>=2.1
-torchvision>=0.16
+tensorboard
+psutil>=5.9
+tabulate
 onnx>=1.14
 onnxruntime>=1.16
-nvidia-cublas-cu12; platform_system == "Linux"
-nvidia-cudnn-cu12; platform_system == "Linux"
+
+# IMPORTANT: Install PyTorch separately based on your hardware (CPU vs CUDA GPU).
+# See README.md for the exact commands.
 
 # Optional tools
 mlflow>=2.9

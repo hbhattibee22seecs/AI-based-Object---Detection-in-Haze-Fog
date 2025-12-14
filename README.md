@@ -49,22 +49,78 @@ All reviewed models maintain **< 70 GFLOPs** and **< 20 M parameters**, confirmi
 ---
 
 ## 📥 RTTS Dataset & Pipeline Quickstart
-1. Create a `data` folder and download the RESIDE RTTS split:  
+This workspace is already structured to train on RTTS using YOLOX.
+
+### 1) Install dependencies
+```powershell
+python -m venv .venv
+./.venv/Scripts/Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 2) Install PyTorch (CPU vs GPU)
+PyTorch is intentionally not pinned in `requirements.txt` because the correct wheel depends on your machine.
+
+- **CPU-only** (works everywhere):
   ```powershell
-  Invoke-WebRequest -Uri https://residedata.obs.cn-north-4.myhuaweicloud.com/RTTS.zip -OutFile data/RTTS.zip
-  Expand-Archive -Path data/RTTS.zip -DestinationPath data -Force
-  Remove-Item data/RTTS.zip
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
   ```
-  (Linux users can `wget` the same URL.)
-2. Install deps and set the dataset path:
+- **CUDA GPU**: install a CUDA-enabled PyTorch build that matches your CUDA driver/toolkit (use the official selector on pytorch.org). Example (choose the right `cu12x` for your setup):
   ```powershell
-  pip install -r requirements.txt
-  $env:YOLOX_DATADIR = "${PWD}/data"
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
   ```
-3. Copy `src\exps\example\custom\yolox_s.py` to `rtts_yolox_s.py`, set `num_classes = 5`, and point `data_dir` to `data/RTTS`.
-4. Train with `python src/tools/train.py -f src/exps/example/custom/rtts_yolox_s.py -d 1 -b 16 --fp16 -o -c yolox_s.pth`.
+
+Sanity check:
+```powershell
+python -c "import torch; print('torch', torch.__version__); print('cuda', torch.cuda.is_available())"
+```
+
+### 3) Point YOLOX at the local dataset
+YOLOX resolves datasets via `YOLOX_DATADIR`.
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+$env:YOLOX_DATADIR = "$PWD\data"
+```
+
+### 4) Quick smoke test (50 iterations → checkpoint → inference)
+This is the fastest end-to-end test (and it shows progress in terminal + TensorBoard):
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\train1epoch_and_infer.ps1 -ExpName rtts_yolox_s_smoke -BatchSize 2 -TrainIters 50
+```
+- TensorBoard URL prints in the terminal (default `http://localhost:6006`).
+- Output image with boxes is saved under `YOLOX_outputs\rtts_yolox_s_smoke\vis_res\...`.
+
+### 5) Full training run (GPU if available)
+```powershell
+# GPU training (default if torch.cuda.is_available() is True)
+Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
+
+python src\tools\train.py -f src\exps\example\custom\rtts_yolox_s.py -d 1 -b 16 -c src\yolox\weights\yolox_s.pth -expn rtts_yolox_s_train --fp16 -o
+```
+
+### 6) Inference on a single image
+```powershell
+python src\tools\demo.py image -f src\exps\example\custom\rtts_yolox_s.py -c YOLOX_outputs\rtts_yolox_s_train\latest_ckpt.pth -expn rtts_yolox_s_train --device gpu --path data\RTTS\JPEGImages\AM_Bing_211.png --save_result --conf 0.001
+```
 
 Detailed guidance lives in `docs/rtts_training.md`.
+
+---
+
+## 🧭 CPU vs GPU Switching
+YOLOX will use GPU automatically when **(1)** you installed a CUDA-enabled PyTorch and **(2)** a CUDA device is visible.
+
+- **Force CPU** (useful for debugging):
+  ```powershell
+  $env:CUDA_VISIBLE_DEVICES = "-1"
+  python src\tools\train.py -f src\exps\example\custom\rtts_yolox_s.py -d 1 -b 2 -c src\yolox\weights\yolox_s.pth -expn rtts_cpu_debug max_epoch 1 data_num_workers 0
+  ```
+- **Force GPU** (if you have CUDA PyTorch):
+  ```powershell
+  Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
+  python src\tools\train.py -f src\exps\example\custom\rtts_yolox_s.py -d 1 -b 16 -c src\yolox\weights\yolox_s.pth -expn rtts_gpu_train
+  ```
 
 ---
 

@@ -201,9 +201,11 @@ def image_demo(predictor, vis_folder, path, current_time, save_result):
             save_file_name = os.path.join(save_folder, os.path.basename(image_name))
             logger.info("Saving detection result in {}".format(save_file_name))
             cv2.imwrite(save_file_name, result_image)
-        ch = cv2.waitKey(0)
-        if ch == 27 or ch == ord("q") or ch == ord("Q"):
-            break
+        # Only block for keypress when running interactively.
+        if not save_result:
+            ch = cv2.waitKey(0)
+            if ch == 27 or ch == ord("q") or ch == ord("Q"):
+                break
 
 
 def imageflow_demo(predictor, vis_folder, current_time, args):
@@ -279,10 +281,34 @@ def main(exp, args):
             ckpt_file = os.path.join(file_name, "best_ckpt.pth")
         else:
             ckpt_file = args.ckpt
+
         logger.info("loading checkpoint")
         ckpt = torch.load(ckpt_file, map_location="cpu")
-        # load the model state dict
-        model.load_state_dict(ckpt["model"])
+
+        # Support multiple checkpoint formats (common across training/export flows)
+        # - {"model": state_dict}
+        # - {"state_dict": state_dict}
+        # - {"model_state_dict": state_dict}
+        # - raw state_dict
+        state_dict = None
+        if isinstance(ckpt, dict):
+            for key in ("model", "state_dict", "model_state_dict"):
+                if key in ckpt and isinstance(ckpt[key], dict):
+                    state_dict = ckpt[key]
+                    break
+        if state_dict is None:
+            state_dict = ckpt
+
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        try:
+            missing, unexpected = incompatible.missing_keys, incompatible.unexpected_keys
+            if missing or unexpected:
+                logger.warning(
+                    f"Checkpoint loaded with missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
+                )
+        except Exception:
+            pass
+
         logger.info("loaded checkpoint done.")
 
     if args.fuse:
@@ -302,8 +328,9 @@ def main(exp, args):
         trt_file = None
         decoder = None
 
+    cls_names = getattr(exp, "class_names", COCO_CLASSES)
     predictor = Predictor(
-        model, exp, COCO_CLASSES, trt_file, decoder,
+        model, exp, cls_names, trt_file, decoder,
         args.device, args.fp16, args.legacy,
     )
     current_time = time.localtime()

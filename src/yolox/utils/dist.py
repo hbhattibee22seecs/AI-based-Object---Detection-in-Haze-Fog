@@ -39,13 +39,24 @@ _LOCAL_PROCESS_GROUP = None
 
 
 def get_num_devices():
-    gpu_list = os.getenv('CUDA_VISIBLE_DEVICES', None)
+    """Return the number of visible CUDA devices.
+
+    This must be robust on Windows/CPU-only setups where `nvidia-smi` may not exist
+    and where users may set `CUDA_VISIBLE_DEVICES=-1` to force CPU.
+    """
+
+    gpu_list = os.getenv("CUDA_VISIBLE_DEVICES", None)
     if gpu_list is not None:
-        return len(gpu_list.split(','))
-    else:
-        devices_list_info = os.popen("nvidia-smi -L")
-        devices_list_info = devices_list_info.read().strip().split("\n")
-        return len(devices_list_info)
+        gpu_list = gpu_list.strip()
+        if gpu_list in ("", "-1", "none", "None"):
+            return 0
+        tokens = [t.strip() for t in gpu_list.split(",")]
+        tokens = [t for t in tokens if t and t != "-1"]
+        return len(tokens)
+
+    if torch.cuda.is_available():
+        return torch.cuda.device_count()
+    return 0
 
 
 @contextmanager

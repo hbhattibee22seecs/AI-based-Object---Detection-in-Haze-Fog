@@ -222,7 +222,9 @@ class Exp(BaseExp):
         return train_loader
 
     def random_resize(self, data_loader, epoch, rank, is_distributed):
-        tensor = torch.LongTensor(2).cuda()
+        # Use CUDA only when available; CPU-only training must not call `.cuda()`.
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        tensor = torch.LongTensor(2).to(device)
 
         if rank == 0:
             size_factor = self.input_size[1] * 1.0 / self.input_size[0]
@@ -356,3 +358,33 @@ class Exp(BaseExp):
 def check_exp_value(exp: Exp):
     h, w = exp.input_size
     assert h % 32 == 0 and w % 32 == 0, "input size must be multiples of 32"
+
+    # When users override `max_epoch` via CLI (e.g., for quick 1-epoch smoke tests),
+    # default values like `warmup_epochs=5` and `no_aug_epochs=15` can accidentally
+    # disable augmentations and keep LR extremely small for the entire run.
+    # Clamp these values to keep training behavior sane.
+    if getattr(exp, "max_epoch", 0) is None or exp.max_epoch <= 0:
+        raise AssertionError("max_epoch must be a positive integer")
+
+    warmup_epochs = int(getattr(exp, "warmup_epochs", 0) or 0)
+    no_aug_epochs = int(getattr(exp, "no_aug_epochs", 0) or 0)
+    max_epoch = int(exp.max_epoch)
+
+    max_reasonable_warmup = max(0, max_epoch - 1)
+    if warmup_epochs > max_reasonable_warmup:
+        from loguru import logger
+
+        logger.warning(
+            f"warmup_epochs ({warmup_epochs}) > max_epoch-1 ({max_reasonable_warmup}); "
+            f"clamping warmup_epochs to {max_reasonable_warmup}"
+        )
+        exp.warmup_epochs = max_reasonable_warmup
+
+    if no_aug_epochs >= max_epoch:
+        from loguru import logger
+
+        logger.warning(
+            f"no_aug_epochs ({no_aug_epochs}) >= max_epoch ({max_epoch}); "
+            "setting no_aug_epochs to 0 so augmentations are not disabled for the whole run"
+        )
+        exp.no_aug_epochs = 0

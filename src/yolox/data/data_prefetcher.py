@@ -13,11 +13,23 @@ class DataPrefetcher:
     https://github.com/NVIDIA/apex/issues/304#issuecomment-493562789.
     """
 
-    def __init__(self, loader):
+    def __init__(self, loader, device: str | None = None):
         self.loader = iter(loader)
-        self.stream = torch.cuda.Stream()
-        self.input_cuda = self._input_cuda_for_image
-        self.record_stream = DataPrefetcher._record_stream_for_image
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+        self.use_cuda = self.device.startswith("cuda") and torch.cuda.is_available()
+
+        if self.use_cuda:
+            self.stream = torch.cuda.Stream()
+            self.input_cuda = self._input_cuda_for_image
+            self.record_stream = DataPrefetcher._record_stream_for_image
+        else:
+            self.stream = None
+            self.input_cuda = None
+            self.record_stream = None
+
         self.preload()
 
     def preload(self):
@@ -28,11 +40,20 @@ class DataPrefetcher:
             self.next_target = None
             return
 
+        if not self.use_cuda:
+            return
+
         with torch.cuda.stream(self.stream):
             self.input_cuda()
             self.next_target = self.next_target.cuda(non_blocking=True)
 
     def next(self):
+        if not self.use_cuda:
+            input = self.next_input
+            target = self.next_target
+            self.preload()
+            return input, target
+
         torch.cuda.current_stream().wait_stream(self.stream)
         input = self.next_input
         target = self.next_target

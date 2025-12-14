@@ -56,11 +56,23 @@ class VOCEvaluator:
             ap50 (float) : VOC 2007 metric AP of IoU=50
             summary (sr): summary info of evaluation.
         """
-        # TODO half to amp_test
-        tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
         model = model.eval()
-        if half:
+
+        # Determine the runtime device from the model itself.
+        # This evaluator must work on CPU-only builds of PyTorch (no ATen_cuda).
+        try:
+            model_device = next(model.parameters()).device
+        except StopIteration:
+            model_device = torch.device("cpu")
+
+        use_cuda = model_device.type == "cuda"
+
+        # Half precision is only safe/meaningful on CUDA in this project.
+        if half and use_cuda:
             model = model.half()
+            input_dtype = torch.float16
+        else:
+            input_dtype = torch.float32
         ids = []
         data_list = {}
         progress_bar = tqdm if is_main_process() else iter
@@ -81,7 +93,7 @@ class VOCEvaluator:
 
         for cur_iter, (imgs, _, info_imgs, ids) in enumerate(progress_bar(self.dataloader)):
             with torch.no_grad():
-                imgs = imgs.type(tensor_type)
+                imgs = imgs.to(device=model_device, dtype=input_dtype)
 
                 # skip the last iters since batchsize might be not enough for batch inference
                 is_time_record = cur_iter < len(self.dataloader) - 1
@@ -105,7 +117,7 @@ class VOCEvaluator:
 
             data_list.update(self.convert_to_voc_format(outputs, info_imgs, ids))
 
-        statistics = torch.cuda.FloatTensor([inference_time, nms_time, n_samples])
+        statistics = torch.tensor([inference_time, nms_time, n_samples], device=model_device, dtype=torch.float32)
         if distributed:
             data_list = gather(data_list, dst=0)
             data_list = ChainMap(*data_list)

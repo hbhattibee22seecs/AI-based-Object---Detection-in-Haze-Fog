@@ -26,6 +26,11 @@ class Exp(MyExp):
         self.data_num_workers = 4
         self.eval_interval = 1
 
+        # Optional: cap iterations per epoch for quick smoke-tests.
+        # Can be overridden from CLI via: train_iters_per_epoch <int>
+        # Set to 0 (default) to use the full dataloader length.
+        self.train_iters_per_epoch = 0
+
     def get_dataset(self, cache: bool = False, cache_type: str = "ram"):
         return RTTSDataset(
             data_dir=self.data_dir,
