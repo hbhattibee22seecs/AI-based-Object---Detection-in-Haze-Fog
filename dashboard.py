@@ -9,7 +9,7 @@ import sys
 import os
 from pathlib import Path
 import torch
-import cv2
+from PIL import ImageDraw
 import numpy as np
 from PIL import Image
 import io
@@ -84,25 +84,21 @@ def main():
     # Main content
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
+
     if uploaded_file is not None and 'predictor' in st.session_state:
         # Read image
-        image = Image.open(uploaded_file)
+        image = Image.open(uploaded_file).convert("RGB")
         img_array = np.array(image)
 
-        # Convert RGB to BGR for OpenCV
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-
-        # Run inference
+        # Run inference (assuming predictor.inference accepts RGB numpy array)
         with st.spinner("Running inference..."):
-            outputs, img_info = st.session_state.predictor.inference(img_bgr)
-            result_img = st.session_state.predictor.visual(outputs[0], img_info, conf_threshold)
+            outputs, img_info = st.session_state.predictor.inference(img_array)
 
-        # Display results
-        st.image(result_img, caption="Detection Results", use_column_width=True)
-
-        # Show detections
+        # Draw bounding boxes using PIL
+        result_img = image.copy()
+        draw = ImageDraw.Draw(result_img)
+        detections = []
         if outputs[0] is not None:
-            detections = []
             for output in outputs[0]:
                 bbox = output[:4].cpu().numpy()
                 score = (output[4] * output[5]).cpu().numpy()
@@ -114,20 +110,24 @@ def main():
                         'confidence': float(score),
                         'bbox': bbox.tolist()
                     })
+                    # Draw rectangle
+                    x0, y0, x1, y1 = bbox
+                    draw.rectangle([x0, y0, x1, y1], outline="red", width=3)
+                    draw.text((x0, y0), f"{RTTS_CLASSES[cls_id]}: {score:.2f}", fill="red")
 
-            if detections:
-                st.subheader("Detected Objects")
-                for det in detections:
-                    st.write(f"**{det['class']}** - Confidence: {det['confidence']:.2f} - BBox: {det['bbox']}")
-            else:
-                st.info("No objects detected above the confidence threshold.")
+        st.image(result_img, caption="Detection Results", use_column_width=True)
+
+        # Show detections
+        if detections:
+            st.subheader("Detected Objects")
+            for det in detections:
+                st.write(f"**{det['class']}** - Confidence: {det['confidence']:.2f} - BBox: {det['bbox']}")
         else:
-            st.info("No detections found.")
+            st.info("No objects detected above the confidence threshold.")
 
         # Download button
-        result_pil = Image.fromarray(cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB))
         buf = io.BytesIO()
-        result_pil.save(buf, format="PNG")
+        result_img.save(buf, format="PNG")
         byte_im = buf.getvalue()
 
         st.download_button(
