@@ -25,3 +25,4 @@ scikit-image>=0.21
 
 # Dashboard
 streamlit>=1.28
+torchvision
