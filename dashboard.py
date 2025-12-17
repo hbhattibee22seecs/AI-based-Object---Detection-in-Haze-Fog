@@ -9,10 +9,11 @@ import sys
 import os
 from pathlib import Path
 import torch
-from PIL import ImageDraw
+from PIL import ImageDraw, ImageFont
 import numpy as np
 from PIL import Image
 import io
+import cv2
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -23,6 +24,53 @@ from tools.demo import Predictor
 
 # RTTS Classes
 RTTS_CLASSES = ("person", "car", "bus", "bicycle", "motorbike")
+
+# Color palette for visualizations
+_COLORS = np.array([
+    [0.000, 0.447, 0.741],
+    [0.850, 0.325, 0.098],
+    [0.929, 0.694, 0.125],
+    [0.494, 0.184, 0.556],
+    [0.466, 0.674, 0.188],
+])
+
+def vis_custom(img, boxes, scores, cls_ids, conf=0.5, class_names=None):
+    """Custom visualization with improved label placement."""
+    for i in range(len(boxes)):
+        box = boxes[i]
+        cls_id = int(cls_ids[i])
+        score = scores[i]
+        if score < conf:
+            continue
+        x0 = int(box[0])
+        y0 = int(box[1])
+        x1 = int(box[2])
+        y1 = int(box[3])
+
+        color = (_COLORS[cls_id % len(_COLORS)] * 255).astype(np.uint8).tolist()
+        text = '{}:{:.1f}%'.format(class_names[cls_id], score * 100)
+        txt_color = (0, 0, 0) if np.mean(_COLORS[cls_id % len(_COLORS)]) > 0.5 else (255, 255, 255)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        txt_size = cv2.getTextSize(text, font, 0.5, 1)[0]
+        
+        # Draw bounding box
+        cv2.rectangle(img, (x0, y0), (x1, y1), color, 2)
+
+        # Place label above the box with padding
+        label_y = max(y0 - 10, txt_size[1] + 10)  # Ensure label stays within image
+        txt_bk_color = (_COLORS[cls_id % len(_COLORS)] * 255 * 0.8).astype(np.uint8).tolist()
+        
+        cv2.rectangle(
+            img,
+            (x0, label_y - txt_size[1] - 8),
+            (x0 + txt_size[0] + 8, label_y + 2),
+            txt_bk_color,
+            -1
+        )
+        cv2.putText(img, text, (x0 + 4, label_y - 4), font, 0.5, txt_color, thickness=1)
+
+    return img
 
 def load_model(exp_file, ckpt_file, device="cpu", fuse=True):
     """Load YOLOX model from experiment and checkpoint."""
@@ -89,31 +137,44 @@ def main():
         # Read image
         image = Image.open(uploaded_file).convert("RGB")
         img_array = np.array(image)
+        
+        # Convert RGB to BGR for the model (OpenCV format expected)
+        img_bgr = img_array[:, :, ::-1].copy()
 
-        # Run inference (assuming predictor.inference accepts RGB numpy array)
+        # Run inference with BGR image
         with st.spinner("Running inference..."):
-            outputs, img_info = st.session_state.predictor.inference(img_array)
+            outputs, img_info = st.session_state.predictor.inference(img_bgr)
 
-        # Draw bounding boxes using PIL
-        result_img = image.copy()
-        draw = ImageDraw.Draw(result_img)
+        # Use custom visualization with improved label placement
+        result_img_bgr = img_info["raw_img"].copy()
+        if outputs[0] is not None:
+            output = outputs[0].cpu()
+            bboxes = output[:, 0:4]
+            # Scale bboxes back to original size
+            bboxes /= img_info["ratio"]
+            scores = output[:, 4] * output[:, 5]
+            cls_ids = output[:, 6]
+            result_img_bgr = vis_custom(result_img_bgr, bboxes, scores, cls_ids, conf_threshold, RTTS_CLASSES)
+        
+        # Convert BGR back to RGB for display
+        result_img = Image.fromarray(result_img_bgr[:, :, ::-1])
+        
+        # Collect detections for display
         detections = []
         if outputs[0] is not None:
             for output in outputs[0]:
-                bbox = output[:4].cpu().numpy()
                 score = (output[4] * output[5]).cpu().numpy()
                 cls_id = int(output[6].cpu().numpy())
 
                 if score > conf_threshold:
+                    bbox = output[:4].cpu().numpy()
+                    ratio = img_info["ratio"]
+                    bbox /= ratio  # Scale back to original image size
                     detections.append({
                         'class': RTTS_CLASSES[cls_id],
                         'confidence': float(score),
                         'bbox': bbox.tolist()
                     })
-                    # Draw rectangle
-                    x0, y0, x1, y1 = bbox
-                    draw.rectangle([x0, y0, x1, y1], outline="red", width=3)
-                    draw.text((x0, y0), f"{RTTS_CLASSES[cls_id]}: {score:.2f}", fill="red")
 
         st.image(result_img, caption="Detection Results", use_column_width=True)
 

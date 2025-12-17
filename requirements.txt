@@ -1,29 +1,33 @@
-# Core training stack
+# Core dependencies
 numpy>=1.23
 loguru>=0.7
 PyYAML>=6.0
 tqdm>=4.66
-matplotlib>=3.7
-cython>=3.0
+# matplotlib>=3.7
+# cython>=3.0
+pillow>=10.0
+opencv-python-headless>=4.8.0
+
+# PyTorch (CPU version for Hugging Face Spaces)
+torch==2.0.1
+torchvision==0.15.2
+
+# YOLOX dependencies
 pycocotools>=2.0.7
 thop>=0.1.1.post2209072238
-
-# YOLOX runtime
-tensorboard
-psutil>=5.9
+# tensorboard
+# psutil>=5.9
 tabulate
-onnx>=1.14
-onnxruntime>=1.16
+# onnx>=1.14
+# onnxruntime>=1.16
 
-# IMPORTANT: Install PyTorch separately based on your hardware (CPU vs CUDA GPU).
-# See README.md for the exact commands.
+# # IMPORTANT: Install PyTorch separately based on your hardware (CPU vs CUDA GPU).
+# # See README.md for the exact commands.
 
-# Optional tools
-mlflow>=2.9
-pillow>=10.0
-scikit-image>=0.21
+# # Optional tools
+# mlflow>=2.9
+# pillow>=10.0
+# scikit-image>=0.21
 
 # Dashboard
 streamlit>=1.28
-torch==2.0.1
-torchvision==0.15.2
